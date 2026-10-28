@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>履歴書 ATS キーワード分析ツール</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen p-4">
+<div class="max-w-5xl mx-auto">
+  <h1 class="text-2xl font-bold mb-2 text-gray-800">履歴書 ATS キーワード分析ツール</h1>
+  <p class="text-sm text-gray-500 mb-4">求人票と履歴書のキーワード一致率を分析し、応募書類の改善点を見つけます。</p>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+    <div class="bg-white rounded-lg shadow p-4">
+      <label for="jobText" class="block text-lg font-semibold text-gray-700 mb-2">求人票テキスト</label>
+      <textarea id="jobText" rows="10" class="w-full border rounded px-3 py-2 text-sm" placeholder="求人票の本文をここに貼り付けてください..." aria-label="求人票テキスト"></textarea>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4">
+      <label for="resumeText" class="block text-lg font-semibold text-gray-700 mb-2">履歴書・職務経歴書テキスト</label>
+      <textarea id="resumeText" rows="10" class="w-full border rounded px-3 py-2 text-sm" placeholder="履歴書や職務経歴書の本文をここに貼り付けてください..." aria-label="履歴書テキスト"></textarea>
+    </div>
+  </div>
+
+  <div class="flex justify-center mb-4">
+    <button onclick="analyze()" class="bg-blue-600 text-white rounded-lg px-8 py-3 text-base font-semibold hover:bg-blue-700" aria-label="分析する">分析する</button>
+  </div>
+
+  <div id="results" class="hidden">
+    <!-- Score -->
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+      <h2 class="text-lg font-semibold mb-3 text-gray-700">マッチ率スコア</h2>
+      <div class="flex items-center gap-4 mb-3">
+        <div class="text-5xl font-bold" id="scoreText"></div>
+        <div class="flex-1">
+          <div class="bg-gray-200 rounded-full h-4 overflow-hidden">
+            <div id="scoreBar" class="h-4 rounded-full transition-all duration-500"></div>
+          </div>
+          <div id="scoreMsg" class="mt-2 text-sm font-semibold"></div>
+        </div>
+      </div>
+      <div id="summaryStats" class="grid grid-cols-3 gap-3 text-center text-sm"></div>
+    </div>
+
+    <!-- Improvement -->
+    <div class="bg-white rounded-lg shadow p-4 mb-4">
+      <h2 class="text-lg font-semibold mb-3 text-gray-700">改善提案</h2>
+      <div id="suggestions" class="text-sm text-gray-700 space-y-1"></div>
+    </div>
+
+    <!-- Keywords -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-white rounded-lg shadow p-4">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">一致キーワード <span class="text-green-600" id="matchCount"></span></h2>
+        <div id="matchedKeywords" class="flex flex-wrap gap-2"></div>
+      </div>
+      <div class="bg-white rounded-lg shadow p-4">
+        <h2 class="text-lg font-semibold mb-3 text-gray-700">不足キーワード <span class="text-red-600" id="missCount"></span></h2>
+        <div id="missedKeywords" class="flex flex-wrap gap-2"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+const STOPWORDS = new Set([
+  'の','に','は','を','た','が','で','て','と','し','れ','さ','ある','いる','も','する','から','な','こと',
+  'として','い','その','に','ため','する','あっ','当','年','及び','の','により','もの','または','とも',
+  'ない','なく','なっ','なる','など','において','について','するため','ます','です','ませ','ません',
+  'した','から','れる','られ','けれど','けれども','しかし','でも','ただし','なお','また','および',
+  'により','による','にとって','において','に対して','として','について','ため','より','また',
+  'これ','それ','あれ','この','その','あの','ここ','そこ','あそこ','こちら','そちら','あちら',
+  'いつ','どこ','だれ','なに','なぜ','どう','どれ','どの','どちら','どんな','いくつ','いくら',
+  'ご','お','お客','様','等','他','各','全て','全','主','際','場合','以上','以下','以内','以外',
+  'いただき','いたし','おり','あり','させて','いただく','おります','ください',
+  'the','a','an','is','are','was','were','be','been','being','have','has','had',
+  'do','does','did','will','would','could','should','may','might','shall','can',
+  'of','in','to','for','with','on','at','from','by','this','that','it','its'
+]);
+
+function extractKeywords(text) {
+  // Tokenize: split by non-alphanumeric (keep CJK chars)
+  const words = text.match(/[　-鿿＀-￯一-龯a-zA-Z0-9]+/g) || [];
+  const freq = {};
+  words.forEach(w => {
+    const lower = w.toLowerCase();
+    if (lower.length < 2) return;
+    if (STOPWORDS.has(lower) || STOPWORDS.has(w)) return;
+    if (/^\d+$/.test(lower)) return; // pure numbers
+    freq[lower] = (freq[lower] || 0) + 1;
+  });
+  // Sort by frequency, return top 50
+  return Object.entries(freq).sort((a,b) => b[1]-a[1]).slice(0,50).map(e => e[0]);
+}
+
+function analyze() {
+  const job = document.getElementById('jobText').value.trim();
+  const resume = document.getElementById('resumeText').value.trim();
+  if (!job || !resume) { alert('求人票と履歴書の両方を入力してください'); return; }
+
+  // Save
+  localStorage.setItem('ats-job', job);
+  localStorage.setItem('ats-resume', resume);
+
+  const jobKw = extractKeywords(job);
+  const resumeText = resume.toLowerCase();
+
+  const matched = [];
+  const missed = [];
+
+  jobKw.forEach(kw => {
+    if (resumeText.includes(kw)) matched.push(kw);
+    else missed.push(kw);
+  });
+
+  const score = jobKw.length > 0 ? Math.round(matched.length / jobKw.length * 100) : 0;
+
+  // Show results
+  document.getElementById('results').classList.remove('hidden');
+
+  // Score
+  const scoreEl = document.getElementById('scoreText');
+  scoreEl.textContent = `${score}%`;
+  scoreEl.className = 'text-5xl font-bold ' + (score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600');
+
+  const bar = document.getElementById('scoreBar');
+  bar.style.width = score + '%';
+  bar.className = 'h-4 rounded-full transition-all duration-500 ' + (score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500');
+
+  const msg = document.getElementById('scoreMsg');
+  if (score >= 80) { msg.textContent = '優秀 — 求人要件とよくマッチしています！'; msg.className = 'mt-2 text-sm font-semibold text-green-700'; }
+  else if (score >= 60) { msg.textContent = '良好 — いくつかのキーワードを追加すると効果的です'; msg.className = 'mt-2 text-sm font-semibold text-yellow-700'; }
+  else if (score >= 40) { msg.textContent = '要改善 — 重要なキーワードが不足しています'; msg.className = 'mt-2 text-sm font-semibold text-orange-700'; }
+  else { msg.textContent = '不十分 — 履歴書を大幅に見直すことをお勧めします'; msg.className = 'mt-2 text-sm font-semibold text-red-700'; }
+
+  // Summary stats
+  const summaryEl = document.getElementById('summaryStats');
+  summaryEl.innerHTML = '';
+  [
+    { label: '求人キーワード総数', value: jobKw.length, cls: 'text-gray-700' },
+    { label: '一致数', value: matched.length, cls: 'text-green-700' },
+    { label: '不足数', value: missed.length, cls: 'text-red-700' },
+  ].forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'bg-gray-50 rounded p-3';
+    const num = document.createElement('div');
+    num.className = `text-2xl font-bold ${item.cls}`;
+    num.textContent = item.value;
+    const lbl = document.createElement('div');
+    lbl.className = 'text-gray-500 text-xs mt-1';
+    lbl.textContent = item.label;
+    div.appendChild(num);
+    div.appendChild(lbl);
+    summaryEl.appendChild(div);
+  });
+
+  // Suggestions
+  const sugg = document.getElementById('suggestions');
+  sugg.innerHTML = '';
+  const items = [];
+  if (score < 80 && missed.length > 0) {
+    items.push(`• 不足キーワードの上位5件を履歴書に追加することを検討してください: 「${missed.slice(0,5).join('」「')}」`);
+  }
+  if (score >= 80) {
+    items.push('• キーワードのマッチ率は高い水準です。内容の具体性と実績数値を強化しましょう。');
+  }
+  if (missed.length > 10) {
+    items.push(`• ${missed.length}件のキーワードが不足しています。職務経歴書のスキルセクションを充実させましょう。`);
+  }
+  items.push('• キーワードは自然な文脈で使用し、詰め込みすぎに注意してください。');
+  items.push('• 職種固有の専門用語・資格名・ツール名を具体的に記載すると効果的です。');
+
+  items.forEach(t => {
+    const div = document.createElement('div');
+    div.className = 'py-1 border-b last:border-0';
+    div.textContent = t;
+    sugg.appendChild(div);
+  });
+
+  // Keywords display
+  document.getElementById('matchCount').textContent = `(${matched.length}件)`;
+  document.getElementById('missCount').textContent = `(${missed.length}件)`;
+
+  const matchedEl = document.getElementById('matchedKeywords');
+  matchedEl.innerHTML = '';
+  matched.forEach(kw => {
+    const tag = document.createElement('span');
+    tag.className = 'px-2 py-1 bg-green-100 text-green-800 rounded text-xs font-medium';
+    tag.textContent = kw;
+    matchedEl.appendChild(tag);
+  });
+
+  const missedEl = document.getElementById('missedKeywords');
+  missedEl.innerHTML = '';
+  missed.slice(0, 30).forEach(kw => {
+    const tag = document.createElement('span');
+    tag.className = 'px-2 py-1 bg-red-100 text-red-800 rounded text-xs font-medium';
+    tag.textContent = kw;
+    missedEl.appendChild(tag);
+  });
+}
+
+// Restore saved
+try {
+  const sj = localStorage.getItem('ats-job');
+  const sr = localStorage.getItem('ats-resume');
+  if (sj) document.getElementById('jobText').value = sj;
+  if (sr) document.getElementById('resumeText').value = sr;
+  if (sj && sr) analyze();
+} catch(e) {}
+</script>
+</body>
+</html>
